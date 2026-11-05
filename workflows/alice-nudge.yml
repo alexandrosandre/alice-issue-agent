@@ -1,0 +1,53 @@
+name: Alice nudge
+
+# Runs the Alice sweep a quiet period after a request to her, so she starts within minutes instead
+# of waiting for the 10-minute schedule, which GitHub often runs late. It fires on a person's
+# activity on an issue assigned to her or on her PR (assignment, labels, edits, comments, reviews)
+# and on a person's comment that @mentions her; the sweep itself decides what starts. Triage acts
+# as bots, whose labels and assignments count as an issue's activity but start no workflow, so its
+# run finishing nudges too.
+on:
+  issues:
+    types: [assigned, unassigned, labeled, unlabeled, edited]
+  issue_comment:
+    types: [created, edited]
+  pull_request_review:
+    types: [submitted]
+  # A label on a pull request arrives as a pull_request event, not an issues one.
+  pull_request:
+    types: [labeled, unlabeled]
+  workflow_run:
+    # TODO: your triage workflow's name.
+    workflows: ["Issue Triage"]
+    types: [completed]
+
+# Every event gets its own wait, with no debounce: the sweep after the last one finds the quiet
+# period over, and the sweep's own concurrency group folds the dispatches into one run.
+
+permissions:
+  contents: read
+
+jobs:
+  nudge:
+    if: >-
+      vars.ALICE_SWEEP_ENABLED == 'true' && (github.event_name == 'workflow_run' || (
+      github.event.sender.type == 'User' && github.event.sender.login != 'alice-bot' && (
+        (github.event.issue && contains(github.event.issue.assignees.*.login, 'alice-bot')) ||
+        (github.event.issue.pull_request && github.event.issue.user.login == 'alice-bot') ||
+        github.event.pull_request.user.login == 'alice-bot' ||
+        (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@alice-bot')))))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+    steps:
+      # A dispatch runs master's sweep whichever branch the event came from; the workflow token
+      # may start workflow_dispatch runs, unlike the other events it sends. The wait is the sweep's
+      # QUIET_PERIOD plus a margin (scripts/tests/test_sweep.py holds them together).
+      - name: Wait for the quiet period, then run the sweep
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          sleep 320
+          gh workflow run alice-sweep.yml --ref master -f dry_run=false -f nudged=true

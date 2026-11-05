@@ -1,0 +1,96 @@
+name: Alice sweep
+
+# Starts Alice's sessions on the issues assigned to alice-bot and on review comments on her pull
+# requests (docs/design.md, "Selection and dispatch"). Besides the schedule, alice-nudge.yml
+# dispatches it a few minutes after each request.
+on:
+  schedule:
+    # Every 10 minutes, off the round minutes, when GitHub's scheduler is busiest.
+    - cron: "3,13,23,33,43,53 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Print the decisions without labeling, commenting or starting sessions"
+        type: boolean
+        required: false
+        default: true
+      nudged:
+        description: "Dispatched by alice-nudge.yml, so it runs only while ALICE_SWEEP_ENABLED is true"
+        type: boolean
+        required: false
+        default: false
+# Sweeps never overlap: a second one could claim and start the same issue before the first one's
+# label lands. Pull requests that change the sweep are tested by the CI job that runs
+# scripts/tests.
+concurrency:
+  group: alice-sweep-sweep
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    # Only master's code runs with the write token and the routine secret: a dispatch on another
+    # branch would run whatever sweep.py that branch holds.
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    env:
+      # Scheduled and nudged sweeps write only while ALICE_SWEEP_ENABLED is 'true', read when the
+      # sweep runs; a manual dispatch writes only when dry_run is unchecked.
+      LIVE: >-
+        ${{ (github.event_name == 'schedule' && vars.ALICE_SWEEP_ENABLED == 'true') ||
+        (github.event_name == 'workflow_dispatch' && !inputs.dry_run &&
+        (!inputs.nudged || vars.ALICE_SWEEP_ENABLED == 'true')) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+
+      # The Claude Code CLI and the secret-store access let the sweep send rounds into
+      # Alice's existing sessions (D38). Without either, every round starts a new session, so
+      # neither may fail the sweep.
+      - name: Set up Node
+        if: env.LIVE == 'true'
+        continue-on-error: true
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24
+
+      # Pinned to an exact version: the sweep relies on `claude auth login` and `claude -p --cloud`.
+      - name: Install Claude Code
+        if: env.LIVE == 'true'
+        continue-on-error: true
+        run: npm install -g @anthropic-ai/claude-code@2.1.311
+
+      # TODO: give this job read and write access to the alice-sweep/claude-login-* secrets only,
+      # with a credential of its own that no pull-request workflow loads, and install the
+      # secret store's CLI as `secrets-cli` (scripts/alice/sweep.py, SECRETS_CLI).
+      - name: Configure secret-store access
+        if: env.LIVE == 'true'
+        continue-on-error: true
+        env:
+          SECRETS_ACCESS: ${{ secrets.ALICE_SWEEP_SECRETS_ACCESS }}
+        run: echo "Configure access to the alice-sweep/claude-login-* secrets here."
+
+      - name: Sweep
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ALICE_ROUTINE_FIRE_URL: ${{ secrets.ALICE_ROUTINE_FIRE_URL }}
+          ALICE_ROUTINE_TOKEN: ${{ secrets.ALICE_ROUTINE_TOKEN }}
+          ALICE_ROUTINE_FIRE_URL_2: ${{ secrets.ALICE_ROUTINE_FIRE_URL_2 }}
+          ALICE_ROUTINE_TOKEN_2: ${{ secrets.ALICE_ROUTINE_TOKEN_2 }}
+        run: |
+          if [ "$LIVE" = "true" ]; then
+            python3 scripts/alice/sweep.py
+          else
+            echo "Dry run: nothing is labeled, commented or started."
+            python3 scripts/alice/sweep.py --dry-run
+          fi

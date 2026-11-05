@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Git pre-push hook for Alice's sessions: refuses a push whose new commits change CI workflow or
+# composite-action files. GitHub runs a workflow edited on a pushed branch with the repository's
+# secrets before anyone reviews it, and the agent reads untrusted text, so a person applies such
+# changes (design D10, docs/design.md). A push ruleset enforces the
+# same on GitHub; this hook makes the refusal clean and says what to do instead.
+# Installed by the `alice` skill at session start.
+set -euo pipefail
+
+remote="$1"
+blocked=()
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+    [[ "$local_sha" =~ ^0+$ ]] && continue # a branch deletion pushes no commits
+    exclude=(--remotes="$remote")
+    [[ "$remote_sha" =~ ^0+$ ]] || exclude+=("$remote_sha")
+    while read -r commit; do
+        # --cc lists a merge's paths only where the result differs from every parent, so a clean
+        # merge of master's own workflow changes passes and a conflict resolution in one does not.
+        while read -r path; do
+            case "$path" in
+                .github/workflows/* | .github/actions/*) blocked+=("${commit:0:12} $path") ;;
+            esac
+        done < <(git diff-tree -r --root --cc --name-only --no-commit-id "$commit")
+    done < <(git rev-list "$local_sha" --not "${exclude[@]}")
+done
+
+[ ${#blocked[@]} -eq 0 ] && exit 0
+{
+    echo "pre-push: refused. These commits change CI workflow or composite-action files:"
+    printf '  %s\n' "${blocked[@]}"
+    echo "Alice never pushes .github/workflows/** or .github/actions/** (design D10): GitHub would"
+    echo "run them with the repository's secrets before review. Take those paths out of the unpushed"
+    echo "commits, and put the change in the PR description as a patch in a \`\`\`diff block"
+    echo "(git diff <base> -- .github/workflows .github/actions) for a person to apply."
+} >&2
+exit 1

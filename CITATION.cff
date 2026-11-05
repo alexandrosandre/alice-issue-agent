@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+message: "If you use or adapt this material, please credit it as below."
+title: "Alice: an unattended issue agent"
+abstract: "An unattended coding agent that turns assigned GitHub issues into tested, risk-assessed pull requests and merges only on a human reviewer's approval."
+type: software
+authors:
+  - family-names: "Andre Chaaraoui"
+    given-names: "Alexandros"
+    alias: "alexandrosandre"
+repository-code: "https://github.com/alexandrosandre/alice-issue-agent"
+license: CC-BY-4.0
